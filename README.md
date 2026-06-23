@@ -17,7 +17,7 @@ This project answers two questions:
 ## Project Architecture
 
 ```
-insurance-funnel-analytics/
+quote-abondonment-predictor/
 │
 ├── data/
 │   └── simulate_funnel.py          # Synthetic funnel event generator
