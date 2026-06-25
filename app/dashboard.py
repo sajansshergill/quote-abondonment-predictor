@@ -1,1 +1,216 @@
+"""
+dashboard.py
+------------
+Streamlit dashboard: funnel health + abandonment risk + intervention ROI.
 
+Run: streamlit run app/dashboard.py
+"""
+
+import streamlit as st
+import duckdb
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mtick
+import plotly.graph_objects as go
+import plotly.express as px
+import joblib, os
+
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Insurance Funnel Analytics",
+    page_icon="📊",
+    layout="wide",
+)
+
+st.title("🚗 Insurance Quote Funnel Analytics")
+st.caption("Jerry.ai-style growth analytics · Built by Sajan Shergill")
+
+DATA_PATH  = os.path.join(os.path.dirname(__file__), "../data/funnel_events.csv")
+SCORED_PATH = os.path.join(os.path.dirname(__file__), "../data/scored_sessions.csv")
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "../models/abandonment_xgb.pkl")
+
+STEP_ORDER = ["zip", "vehicle", "driver", "quotes", "bind"]
+AVG_COMMISSION = 45
+
+# ── Load data ─────────────────────────────────────────────────────────────────
+@st.cache_data
+def load_data():
+    con = duckdb.connect()
+    df  = con.execute(f"SELECT * FROM read_csv_auto('{DATA_PATH}')").df()
+    return df
+
+@st.cache_data
+def load_scored():
+    if os.path.exists(SCORED_PATH):
+        return pd.read_csv(SCORED_PATH)
+    return None
+
+df = load_data()
+scored = load_scored()
+
+# ── Sidebar filters ───────────────────────────────────────────────────────────
+st.sidebar.header("Filters")
+channels = st.sidebar.multiselect("Channel", df["channel"].unique().tolist(), default=df["channel"].unique().tolist())
+devices  = st.sidebar.multiselect("Device",  df["device"].unique().tolist(),  default=df["device"].unique().tolist())
+
+filtered = df[df["channel"].isin(channels) & df["device"].isin(devices)]
+
+# ── KPI row ───────────────────────────────────────────────────────────────────
+total_sessions = filtered["session_id"].nunique()
+bound = filtered[(filtered["step"] == "bind") & (filtered["dropped"] == False)]["session_id"].nunique()
+bind_rate = bound / total_sessions if total_sessions else 0
+lost_rev   = (total_sessions - bound) * AVG_COMMISSION
+
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Total Sessions",    f"{total_sessions:,}")
+k2.metric("Bound Policies",    f"{bound:,}")
+k3.metric("Bind Rate",         f"{bind_rate:.2%}")
+k4.metric("Est. Lost Revenue", f"${lost_rev:,.0f}", delta=f"-${lost_rev:,.0f}", delta_color="inverse")
+
+st.divider()
+
+# ── Funnel waterfall ──────────────────────────────────────────────────────────
+st.subheader("Funnel: Step-Level Conversion")
+
+funnel_data = (
+    filtered.groupby("step")
+    .agg(reached=("session_id", "count"), dropped=("dropped", "sum"))
+    .reindex(STEP_ORDER)
+    .fillna(0)
+    .assign(pass_through=lambda x: x["reached"] - x["dropped"])
+    .assign(drop_rate=lambda x: (x["dropped"] / x["reached"] * 100).round(1))
+)
+
+fig_funnel = go.Figure(go.Funnel(
+    y=STEP_ORDER,
+    x=funnel_data["reached"].values,
+    textinfo="value+percent initial",
+    marker=dict(color=["#4C72B0", "#55A868", "#C44E52", "#8172B2", "#CCB974"]),
+))
+fig_funnel.update_layout(height=380, margin=dict(l=20, r=20, t=20, b=20))
+st.plotly_chart(fig_funnel, use_container_width=True)
+
+# Drop rate table
+st.dataframe(
+    funnel_data[["reached", "dropped", "drop_rate"]]
+    .rename(columns={"reached": "Sessions Reached", "dropped": "Dropped", "drop_rate": "Drop Rate %"}),
+    use_container_width=True,
+)
+
+st.divider()
+
+# ── Drop rate heatmap: channel × device ───────────────────────────────────────
+st.subheader("Abandonment Heatmap: Channel × Device (Quotes Step)")
+
+heatmap_df = (
+    filtered[filtered["step"] == "quotes"]
+    .groupby(["channel", "device"])["dropped"]
+    .mean()
+    .unstack("device")
+    .round(3) * 100
+)
+
+fig_heat = px.imshow(
+    heatmap_df,
+    text_auto=".1f",
+    color_continuous_scale="Reds",
+    labels=dict(color="Drop Rate %"),
+    title="Drop Rate % at Quotes Step",
+    height=350,
+)
+st.plotly_chart(fig_heat, use_container_width=True)
+
+st.divider()
+
+# ── Abandonment model score distribution ─────────────────────────────────────
+if scored is not None:
+    st.subheader("Abandonment Risk: Model Score Distribution")
+
+    threshold = st.slider("Risk threshold (flag sessions above this)", 0.3, 0.9, 0.65, 0.05)
+    high_risk = scored[scored["abandon_prob"] >= threshold]
+    st.caption(f"**{len(high_risk):,}** sessions above threshold ({threshold}) — estimated intervention value: **${len(high_risk) * AVG_COMMISSION * 0.12:,.0f}**")
+
+    fig_hist = px.histogram(
+        scored, x="abandon_prob", nbins=40,
+        color_discrete_sequence=["#4C72B0"],
+        labels={"abandon_prob": "P(Abandon)"},
+        title="Distribution of Abandonment Probability Scores",
+        height=320,
+    )
+    fig_hist.add_vline(x=threshold, line_dash="dash", line_color="red", annotation_text=f"Threshold: {threshold}")
+    st.plotly_chart(fig_hist, use_container_width=True)
+    st.divider()
+
+# ── Intervention ROI panel ────────────────────────────────────────────────────
+st.subheader("Intervention ROI Estimator")
+
+con = duckdb.connect()
+con.execute(f"CREATE VIEW funnel_events AS SELECT * FROM read_csv_auto('{DATA_PATH}')")
+
+sizing_sql = """
+WITH cohort_early_price_reveal AS (
+    SELECT session_id, 'Early Price Reveal' AS intervention, 0.15 AS assumed_lift_rate
+    FROM funnel_events
+    WHERE step = 'quotes' AND dropped = TRUE AND cheapest_quote_usd < 120
+),
+cohort_quote_cap AS (
+    SELECT session_id, 'Quote Count Cap' AS intervention, 0.12 AS assumed_lift_rate
+    FROM funnel_events
+    WHERE step = 'quotes' AND dropped = TRUE AND quote_count >= 5
+),
+cohort_reengage_nudge AS (
+    SELECT session_id, 'Re-engagement Nudge' AS intervention, 0.08 AS assumed_lift_rate
+    FROM funnel_events
+    WHERE device = 'mobile' AND step IN ('driver', 'quotes') AND dropped = TRUE
+),
+all_cohorts AS (
+    SELECT * FROM cohort_early_price_reveal
+    UNION ALL SELECT * FROM cohort_quote_cap
+    UNION ALL SELECT * FROM cohort_reengage_nudge
+)
+SELECT
+    intervention,
+    COUNT(*) AS cohort_size,
+    MAX(assumed_lift_rate) AS lift_rate,
+    ROUND(COUNT(*) * MAX(assumed_lift_rate)) AS new_conversions,
+    ROUND(COUNT(*) * MAX(assumed_lift_rate) * 45, 0) AS revenue_lift_usd
+FROM all_cohorts
+GROUP BY intervention
+ORDER BY revenue_lift_usd DESC
+"""
+cohorts = con.execute(sizing_sql).df()
+
+c1, c2 = st.columns([2, 1])
+with c1:
+    fig_roi = px.bar(
+        cohorts, x="intervention", y="revenue_lift_usd",
+        color="intervention",
+        text=cohorts["revenue_lift_usd"].apply(lambda x: f"${x:,.0f}"),
+        labels={"revenue_lift_usd": "Revenue Lift (USD)", "intervention": ""},
+        title="Projected Revenue Lift by Intervention (this dataset)",
+        height=380,
+        color_discrete_sequence=["#2196F3", "#4CAF50", "#FF9800"],
+    )
+    fig_roi.update_traces(textposition="outside")
+    fig_roi.update_layout(showlegend=False)
+    st.plotly_chart(fig_roi, use_container_width=True)
+
+with c2:
+    st.markdown("**Cohort Sizes**")
+    st.dataframe(
+        cohorts[["intervention", "cohort_size", "lift_rate", "new_conversions", "revenue_lift_usd"]]
+        .rename(columns={
+            "intervention": "Intervention",
+            "cohort_size": "Cohort",
+            "lift_rate": "Lift",
+            "new_conversions": "New Binds",
+            "revenue_lift_usd": "Revenue $",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("---")
+    total_lift = cohorts["revenue_lift_usd"].sum()
+    st.metric("Total Projected Lift", f"${total_lift:,.0f}")
+    st.caption(f"At ${AVG_COMMISSION} avg commission · Assumes zero cohort overlap")
