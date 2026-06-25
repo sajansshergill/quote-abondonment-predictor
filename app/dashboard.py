@@ -9,12 +9,11 @@ Run: streamlit run app/dashboard.py
 import streamlit as st
 import duckdb
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mtick
 import plotly.graph_objects as go
 import plotly.express as px
-import joblib, os
+import os
+import sys
+from pathlib import Path
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -26,14 +25,25 @@ st.set_page_config(
 st.title("🚗 Insurance Quote Funnel Analytics")
 st.caption("Jerry.ai-style growth analytics · Built by Sajan Shergill")
 
-DATA_PATH  = os.path.join(os.path.dirname(__file__), "../data/funnel_events.csv")
-SCORED_PATH = os.path.join(os.path.dirname(__file__), "../data/scored_sessions.csv")
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "../models/abandonment_xgb.pkl")
+ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = ROOT / "data" / "funnel_events.csv"
+SCORED_PATH = ROOT / "data" / "scored_sessions.csv"
 
 STEP_ORDER = ["zip", "vehicle", "driver", "quotes", "bind"]
 AVG_COMMISSION = 45
 
 # ── Load data ─────────────────────────────────────────────────────────────────
+def ensure_funnel_data() -> None:
+    if DATA_PATH.exists():
+        return
+
+    st.info("Generating demo funnel dataset for first launch. This takes a few seconds.")
+    sys.path.insert(0, str(ROOT))
+    from data.simulate_funnel import main as simulate_funnel
+
+    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    simulate_funnel()
+
 @st.cache_data
 def load_data():
     con = duckdb.connect()
@@ -46,6 +56,7 @@ def load_scored():
         return pd.read_csv(SCORED_PATH)
     return None
 
+ensure_funnel_data()
 df = load_data()
 scored = load_scored()
 
