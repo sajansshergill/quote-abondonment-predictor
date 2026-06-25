@@ -5,16 +5,38 @@
 # %%
 import duckdb
 import pandas as pd
+import os
+from pathlib import Path
+
+def find_project_root() -> Path:
+    start = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+    for path in (start, *start.parents):
+        if (path / "requirements.txt").exists() and (path / "data").exists():
+            return path
+    raise RuntimeError("Could not locate project root.")
+
+ROOT = find_project_root()
+MPLCONFIGDIR = ROOT / ".matplotlib"
+MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", str(MPLCONFIGDIR))
+
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 import seaborn as sns
 
 sns.set_theme(style="whitegrid", palette="muted")
 
+DATA_PATH = ROOT / "data" / "funnel_events.csv"
+ASSETS_DIR = ROOT / "app" / "assets"
+ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+
 # ── Load data ─────────────────────────────────────────────────────────────────
 # %%
 con = duckdb.connect()
-df = con.execute("SELECT * FROM read_csv_auto('../data/funnel_events.csv')").df()
+df = con.execute(f"SELECT * FROM read_csv_auto('{DATA_PATH}')").df()
 print(df.shape)
 df.dtypes
 
@@ -46,8 +68,8 @@ ax.set_xlabel("Step")
 ax.set_ylabel("Sessions")
 ax.legend()
 plt.tight_layout()
-plt.savefig("../app/assets/funnel_bar.png", dpi=150)
-plt.show()
+plt.savefig(ASSETS_DIR / "funnel_bar.png", dpi=150)
+plt.close()
 
 # %% [markdown]
 # ## 2. Drop Rate by Channel
@@ -64,7 +86,14 @@ channel_drop = channel_drop.sort_values("step")
 
 # %%
 g = sns.FacetGrid(channel_drop, col="step", col_order=STEP_ORDER, height=4, sharey=True)
-g.map_dataframe(sns.barplot, x="channel", y="drop_rate", palette="Set2")
+g.map_dataframe(
+    sns.barplot,
+    x="channel",
+    y="drop_rate",
+    hue="channel",
+    palette="Set2",
+    legend=False,
+)
 g.set_ylabels("Drop Rate")
 g.set_titles("{col_name}")
 for ax in g.axes.flat:
@@ -72,8 +101,8 @@ for ax in g.axes.flat:
     ax.tick_params(axis="x", rotation=30)
 g.figure.suptitle("Drop Rate by Channel × Step", y=1.02, fontsize=13)
 plt.tight_layout()
-plt.savefig("../app/assets/drop_by_channel.png", dpi=150)
-plt.show()
+plt.savefig(ASSETS_DIR / "drop_by_channel.png", dpi=150)
+plt.close()
 
 # %% [markdown]
 # ## 3. Drop Rate by Device
@@ -93,8 +122,8 @@ plt.ylabel("Drop Rate")
 plt.legend(title="Device")
 plt.xticks(rotation=0)
 plt.tight_layout()
-plt.savefig("../app/assets/drop_by_device.png", dpi=150)
-plt.show()
+plt.savefig(ASSETS_DIR / "drop_by_device.png", dpi=150)
+plt.close()
 
 # %% [markdown]
 # ## 4. Drop Rate at Quotes Step by Quote Count
@@ -108,21 +137,29 @@ quotes_df["quote_bucket"] = pd.cut(
 )
 
 quote_drop = (
-    quotes_df.groupby("quote_bucket")["dropped"]
+    quotes_df.groupby("quote_bucket", observed=False)["dropped"]
     .mean()
     .reset_index()
     .rename(columns={"dropped": "drop_rate"})
 )
 
 fig, ax = plt.subplots(figsize=(7, 4))
-sns.barplot(data=quote_drop, x="quote_bucket", y="drop_rate", palette="Blues_d", ax=ax)
+sns.barplot(
+    data=quote_drop,
+    x="quote_bucket",
+    y="drop_rate",
+    hue="quote_bucket",
+    palette="Blues_d",
+    legend=False,
+    ax=ax,
+)
 ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
 ax.set_title("Drop Rate at Quotes Step by Number of Quotes Shown", fontsize=12)
 ax.set_xlabel("Quote Count Bucket")
 ax.set_ylabel("Drop Rate")
 plt.tight_layout()
-plt.savefig("../app/assets/drop_by_quote_count.png", dpi=150)
-plt.show()
+plt.savefig(ASSETS_DIR / "drop_by_quote_count.png", dpi=150)
+plt.close()
 
 # %% [markdown]
 # ## 5. Key Takeaways

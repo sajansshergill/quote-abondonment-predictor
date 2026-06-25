@@ -7,8 +7,31 @@
 import duckdb
 import pandas as pd
 import numpy as np
+import os
+from pathlib import Path
+
+def find_project_root() -> Path:
+    start = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+    for path in (start, *start.parents):
+        if (path / "requirements.txt").exists() and (path / "data").exists():
+            return path
+    raise RuntimeError("Could not locate project root.")
+
+ROOT = find_project_root()
+MPLCONFIGDIR = ROOT / ".matplotlib"
+MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", str(MPLCONFIGDIR))
+
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import shap
+try:
+    import shap
+    SHAP_IMPORT_ERROR = None
+except ImportError as exc:
+    shap = None
+    SHAP_IMPORT_ERROR = exc
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import (
@@ -16,16 +39,24 @@ from sklearn.metrics import (
     RocCurveDisplay, PrecisionRecallDisplay,
 )
 from xgboost import XGBClassifier
-import joblib, os
+import joblib
 
 SEED = 42
+
+DATA_PATH = ROOT / "data" / "funnel_events.csv"
+SQL_PATH = ROOT / "sql" / "session_features.sql"
+ASSETS_DIR = ROOT / "app" / "assets"
+MODELS_DIR = ROOT / "models"
+SCORED_PATH = ROOT / "data" / "scored_sessions.csv"
+ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Load session-level features via SQL ──────────────────────────────────────
 # %%
 con = duckdb.connect()
-con.execute("CREATE VIEW funnel_events AS SELECT * FROM read_csv_auto('../data/funnel_events.csv')")
+con.execute(f"CREATE VIEW funnel_events AS SELECT * FROM read_csv_auto('{DATA_PATH}')")
 
-with open("../sql/session_features.sql") as f:
+with open(SQL_PATH, encoding="utf-8") as f:
     sql = f.read()
 
 # session_features.sql ends with a SELECT; run it directly
@@ -88,7 +119,6 @@ clf = XGBClassifier(
     learning_rate=0.05,
     subsample=0.8,
     colsample_bytree=0.8,
-    use_label_encoder=False,
     eval_metric="logloss",
     random_state=SEED,
     n_jobs=-1,
@@ -116,22 +146,31 @@ axes[0].set_title("ROC Curve")
 PrecisionRecallDisplay.from_predictions(y_test, y_proba, ax=axes[1], name="XGBoost")
 axes[1].set_title("Precision-Recall Curve")
 plt.tight_layout()
-plt.savefig("../app/assets/model_eval.png", dpi=150)
-plt.show()
+plt.savefig(ASSETS_DIR / "model_eval.png", dpi=150)
+plt.close()
 
 # %% [markdown]
-# ## 5. SHAP Feature Importance
+# ## 5. Feature Importance
 
 # %%
-explainer  = shap.TreeExplainer(clf)
-shap_vals  = explainer.shap_values(X_test)
-
 fig, ax = plt.subplots(figsize=(9, 5))
-shap.summary_plot(shap_vals, X_test, feature_names=FEATURES, show=False)
-plt.title("SHAP Feature Importance — Abandonment Model", fontsize=12)
+if shap is not None:
+    explainer = shap.TreeExplainer(clf)
+    shap_vals = explainer.shap_values(X_test)
+    shap.summary_plot(shap_vals, X_test, feature_names=FEATURES, show=False)
+    plt.title("SHAP Feature Importance - Abandonment Model", fontsize=12)
+else:
+    print(f"SHAP unavailable ({SHAP_IMPORT_ERROR}); using XGBoost feature importance.")
+    importance = (
+        pd.Series(clf.feature_importances_, index=FEATURES)
+        .sort_values(ascending=True)
+    )
+    importance.plot(kind="barh", ax=ax, color="#4C72B0")
+    ax.set_title("XGBoost Feature Importance - Abandonment Model", fontsize=12)
+    ax.set_xlabel("Importance")
 plt.tight_layout()
-plt.savefig("../app/assets/shap_summary.png", dpi=150, bbox_inches="tight")
-plt.show()
+plt.savefig(ASSETS_DIR / "shap_summary.png", dpi=150, bbox_inches="tight")
+plt.close()
 
 # %% [markdown]
 # ## 6. Score the Full Dataset (for dashboard)
@@ -139,14 +178,13 @@ plt.show()
 # %%
 model_df["abandon_prob"] = clf.predict_proba(X)[:, 1]
 
-scored_path = "../data/scored_sessions.csv"
-model_df.to_csv(scored_path, index=False)
-print(f"Scored sessions saved to {scored_path}")
+model_df.to_csv(SCORED_PATH, index=False)
+print(f"Scored sessions saved to {SCORED_PATH}")
 
 # Save model
-os.makedirs("../models", exist_ok=True)
-joblib.dump(clf, "../models/abandonment_xgb.pkl")
-print("Model saved to ../models/abandonment_xgb.pkl")
+MODEL_PATH = MODELS_DIR / "abandonment_xgb.pkl"
+joblib.dump(clf, MODEL_PATH)
+print(f"Model saved to {MODEL_PATH}")
 
 # %% [markdown]
 # ## Key Takeaways

@@ -89,13 +89,13 @@ fig_funnel = go.Figure(go.Funnel(
     marker=dict(color=["#4C72B0", "#55A868", "#C44E52", "#8172B2", "#CCB974"]),
 ))
 fig_funnel.update_layout(height=380, margin=dict(l=20, r=20, t=20, b=20))
-st.plotly_chart(fig_funnel, use_container_width=True)
+st.plotly_chart(fig_funnel, width="stretch")
 
 # Drop rate table
 st.dataframe(
     funnel_data[["reached", "dropped", "drop_rate"]]
     .rename(columns={"reached": "Sessions Reached", "dropped": "Dropped", "drop_rate": "Drop Rate %"}),
-    use_container_width=True,
+    width="stretch",
 )
 
 st.divider()
@@ -119,7 +119,7 @@ fig_heat = px.imshow(
     title="Drop Rate % at Quotes Step",
     height=350,
 )
-st.plotly_chart(fig_heat, use_container_width=True)
+st.plotly_chart(fig_heat, width="stretch")
 
 st.divider()
 
@@ -139,7 +139,7 @@ if scored is not None:
         height=320,
     )
     fig_hist.add_vline(x=threshold, line_dash="dash", line_color="red", annotation_text=f"Threshold: {threshold}")
-    st.plotly_chart(fig_hist, use_container_width=True)
+    st.plotly_chart(fig_hist, width="stretch")
     st.divider()
 
 # ── Intervention ROI panel ────────────────────────────────────────────────────
@@ -194,7 +194,7 @@ with c1:
     )
     fig_roi.update_traces(textposition="outside")
     fig_roi.update_layout(showlegend=False)
-    st.plotly_chart(fig_roi, use_container_width=True)
+    st.plotly_chart(fig_roi, width="stretch")
 
 with c2:
     st.markdown("**Cohort Sizes**")
@@ -207,7 +207,7 @@ with c2:
             "new_conversions": "New Binds",
             "revenue_lift_usd": "Revenue $",
         }),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.markdown("---")

@@ -7,11 +7,34 @@
 import duckdb
 import pandas as pd
 import numpy as np
+import os
+from pathlib import Path
+
+def find_project_root() -> Path:
+    start = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+    for path in (start, *start.parents):
+        if (path / "requirements.txt").exists() and (path / "data").exists():
+            return path
+    raise RuntimeError("Could not locate project root.")
+
+ROOT = find_project_root()
+MPLCONFIGDIR = ROOT / ".matplotlib"
+MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", str(MPLCONFIGDIR))
+
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 import seaborn as sns
 
 sns.set_theme(style="whitegrid")
+
+DATA_PATH = ROOT / "data" / "funnel_events.csv"
+SQL_PATH = ROOT / "sql" / "intervention_cohorts.sql"
+ASSETS_DIR = ROOT / "app" / "assets"
+ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
 AVG_POLICY_COMMISSION = 45   # USD per bound policy
 DAILY_SESSIONS        = 10_000
@@ -19,7 +42,7 @@ DAILY_SESSIONS        = 10_000
 # ── Load data ─────────────────────────────────────────────────────────────────
 # %%
 con = duckdb.connect()
-con.execute("CREATE VIEW funnel_events AS SELECT * FROM read_csv_auto('../data/funnel_events.csv')")
+con.execute(f"CREATE VIEW funnel_events AS SELECT * FROM read_csv_auto('{DATA_PATH}')")
 
 # %% [markdown]
 # ## 1. Baseline Conversion Metrics
@@ -50,7 +73,7 @@ baseline_bind_rate = baseline["bind_rate_pct"].iloc[0] / 100
 
 # %%
 # Run intervention_cohorts.sql to get cohort sizes
-with open("../sql/intervention_cohorts.sql") as f:
+with open(SQL_PATH, encoding="utf-8") as f:
     sql = f.read()
 
 # Execute the final SELECT (sizing query) separately
@@ -113,8 +136,8 @@ ax.set_xlabel("Projected Revenue Lift (USD, this dataset)")
 ax.set_title("Estimated Revenue Lift by Intervention", fontsize=13)
 ax.invert_yaxis()
 plt.tight_layout()
-plt.savefig("../app/assets/intervention_lift.png", dpi=150)
-plt.show()
+plt.savefig(ASSETS_DIR / "intervention_lift.png", dpi=150)
+plt.close()
 
 # %% [markdown]
 # ## 4. Sensitivity Analysis — Lift Rate vs. Revenue
@@ -134,8 +157,8 @@ ax.set_ylabel("Revenue Lift (USD)")
 ax.set_title("Sensitivity: Revenue Lift vs. Assumed Lift Rate", fontsize=12)
 ax.legend()
 plt.tight_layout()
-plt.savefig("../app/assets/sensitivity.png", dpi=150)
-plt.show()
+plt.savefig(ASSETS_DIR / "sensitivity.png", dpi=150)
+plt.close()
 
 # %% [markdown]
 # ## 5. Extrapolate to Production Scale
