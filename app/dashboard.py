@@ -7,11 +7,9 @@ Run: streamlit run app/dashboard.py
 """
 
 import streamlit as st
-import duckdb
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-import os
 import sys
 from pathlib import Path
 
@@ -46,13 +44,11 @@ def ensure_funnel_data() -> None:
 
 @st.cache_data
 def load_data():
-    con = duckdb.connect()
-    df  = con.execute(f"SELECT * FROM read_csv_auto('{DATA_PATH}')").df()
-    return df
+    return pd.read_csv(DATA_PATH)
 
 @st.cache_data
 def load_scored():
-    if os.path.exists(SCORED_PATH):
+    if SCORED_PATH.exists():
         return pd.read_csv(SCORED_PATH)
     return None
 
@@ -156,41 +152,38 @@ if scored is not None:
 # ── Intervention ROI panel ────────────────────────────────────────────────────
 st.subheader("Intervention ROI Estimator")
 
-con = duckdb.connect()
-con.execute(f"CREATE VIEW funnel_events AS SELECT * FROM read_csv_auto('{DATA_PATH}')")
+def cohort_row(intervention: str, cohort_size: int, lift_rate: float) -> dict:
+    new_conversions = round(cohort_size * lift_rate)
+    return {
+        "intervention": intervention,
+        "cohort_size": cohort_size,
+        "lift_rate": lift_rate,
+        "new_conversions": new_conversions,
+        "revenue_lift_usd": round(new_conversions * AVG_COMMISSION),
+    }
 
-sizing_sql = """
-WITH cohort_early_price_reveal AS (
-    SELECT session_id, 'Early Price Reveal' AS intervention, 0.15 AS assumed_lift_rate
-    FROM funnel_events
-    WHERE step = 'quotes' AND dropped = TRUE AND cheapest_quote_usd < 120
-),
-cohort_quote_cap AS (
-    SELECT session_id, 'Quote Count Cap' AS intervention, 0.12 AS assumed_lift_rate
-    FROM funnel_events
-    WHERE step = 'quotes' AND dropped = TRUE AND quote_count >= 5
-),
-cohort_reengage_nudge AS (
-    SELECT session_id, 'Re-engagement Nudge' AS intervention, 0.08 AS assumed_lift_rate
-    FROM funnel_events
-    WHERE device = 'mobile' AND step IN ('driver', 'quotes') AND dropped = TRUE
-),
-all_cohorts AS (
-    SELECT * FROM cohort_early_price_reveal
-    UNION ALL SELECT * FROM cohort_quote_cap
-    UNION ALL SELECT * FROM cohort_reengage_nudge
-)
-SELECT
-    intervention,
-    COUNT(*) AS cohort_size,
-    MAX(assumed_lift_rate) AS lift_rate,
-    ROUND(COUNT(*) * MAX(assumed_lift_rate)) AS new_conversions,
-    ROUND(COUNT(*) * MAX(assumed_lift_rate) * 45, 0) AS revenue_lift_usd
-FROM all_cohorts
-GROUP BY intervention
-ORDER BY revenue_lift_usd DESC
-"""
-cohorts = con.execute(sizing_sql).df()
+quotes_drop = filtered[(filtered["step"] == "quotes") & (filtered["dropped"] == True)]
+reengage = filtered[
+    (filtered["device"] == "mobile")
+    & (filtered["step"].isin(["driver", "quotes"]))
+    & (filtered["dropped"] == True)
+]
+
+cohorts = pd.DataFrame(
+    [
+        cohort_row(
+            "Early Price Reveal",
+            len(quotes_drop[quotes_drop["cheapest_quote_usd"] < 120]),
+            0.15,
+        ),
+        cohort_row(
+            "Quote Count Cap",
+            len(quotes_drop[quotes_drop["quote_count"] >= 5]),
+            0.12,
+        ),
+        cohort_row("Re-engagement Nudge", len(reengage), 0.08),
+    ]
+).sort_values("revenue_lift_usd", ascending=False)
 
 c1, c2 = st.columns([2, 1])
 with c1:

@@ -10,6 +10,10 @@ all: install simulate notebooks dashboard
 
 ## Install Python dependencies
 install:
+	pip install -r requirements-dev.txt
+
+## Install dashboard-only dependencies for Streamlit deployment
+install-app:
 	pip install -r requirements.txt
 
 ## Generate synthetic funnel dataset

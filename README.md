@@ -148,7 +148,7 @@ This project is structured the way a DS&A team member at a growth-stage insurete
 ```bash
 git clone https://github.com/sajansshergill/insurance-funnel-analytics
 cd insurance-funnel-analytics
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 # Generate synthetic data
 python data/simulate_funnel.py
@@ -156,6 +156,8 @@ python data/simulate_funnel.py
 # Launch dashboard
 streamlit run app/dashboard.py
 ```
+
+For Streamlit Cloud, `requirements.txt` intentionally contains only the lightweight dashboard dependencies. The dashboard auto-generates the demo funnel CSV on first launch if it is not present.
 
 ---
 
